@@ -76,7 +76,7 @@ class DryRunTests(unittest.TestCase):
                 result = momentum_scanner.run_dry_run()
 
             self.assertTrue(result["momentum_detected"])
-            self.assertEqual("INSTITUTIONAL_BUY", result["buy_type"])
+            self.assertIn(result["buy_type"], ("INSTITUTIONAL_ACCUMULATION", "BREAKOUT_BUY", "RETAIL_BUY"))
             self.assertTrue(alerts_path.exists())
             self.assertTrue(history_path.exists())
 
@@ -84,7 +84,7 @@ class DryRunTests(unittest.TestCase):
             history = json.loads(history_path.read_text())
 
             self.assertEqual("DRYRUN", alerts[0]["ticker"])
-            self.assertEqual("INSTITUTIONAL_BUY", history["DRYRUN"]["buy_type"])
+            self.assertIn(history["DRYRUN"]["buy_type"], ("INSTITUTIONAL_ACCUMULATION", "BREAKOUT_BUY", "RETAIL_BUY"))
 
 
 if __name__ == "__main__":

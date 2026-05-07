@@ -14,8 +14,8 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # Scanner Settings
-PRICE_INCREASE_THRESHOLD = 10  # Minimum 10% price increase
-VOLUME_MULTIPLIER = 5  # High relative volume = 5x 30-day average
+PRICE_INCREASE_THRESHOLD = 3   # Minimum 3% price move (used in report context)
+VOLUME_MULTIPLIER = 2          # Elevated volume = 2x 30-day average
 TIME_FRAME = "1h"  # 1-hour candle (we'll fetch intraday data)
 
 # Stock Exchange Lists
