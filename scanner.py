@@ -22,7 +22,12 @@ from config import (
     OUTPUT_ALERT_FILE,
     MIN_PRICE,
     MAX_PRICE,
-    MIN_MARKET_CAP
+    MIN_MARKET_CAP,
+    EMAIL_SENDER,
+    EMAIL_PASSWORD,
+    EMAIL_RECIPIENT,
+    EMAIL_SMTP_SERVER,
+    EMAIL_SMTP_PORT,
 )
 
 from data_fetcher import StockDataFetcher, NewsAnalyzer
@@ -415,9 +420,32 @@ def main():
         metavar="N",
         help="Number of parallel worker threads for scanning (default: 10).",
     )
+    parser.add_argument(
+        "--email",
+        metavar="ADDRESS",
+        default=None,
+        help="Recipient email for alerts (overrides EMAIL_RECIPIENT env var).",
+    )
     args = parser.parse_args()
 
-    scanner = MomentumScanner()
+    recipient = args.email or EMAIL_RECIPIENT or None
+    email_cfg = None
+    if EMAIL_SENDER and EMAIL_PASSWORD:
+        email_cfg = {
+            "enabled": True,
+            "smtp_server": EMAIL_SMTP_SERVER,
+            "smtp_port": EMAIL_SMTP_PORT,
+            "sender_email": EMAIL_SENDER,
+            "sender_password": EMAIL_PASSWORD,
+        }
+        if recipient:
+            logger.info(f"Email alerts enabled → {recipient}")
+        else:
+            logger.warning("EMAIL_SENDER/EMAIL_PASSWORD set but no recipient — pass --email or set EMAIL_RECIPIENT in .env")
+    else:
+        logger.warning("Email not configured. Set EMAIL_SENDER + EMAIL_PASSWORD in .env to receive alerts.")
+
+    scanner = MomentumScanner(email_config=email_cfg, recipient_email=recipient)
 
     try:
         if args.dry_run:

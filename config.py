@@ -53,3 +53,10 @@ WEBULL_WEB_URL = "https://www.webull.com/quote/{ticker}"  # WebUll web link
 # Alerts Output
 ALERT_CHANNELS = ["console", "file", "json"]  # Where to send alerts
 OUTPUT_ALERT_FILE = "data/alerts.json"
+
+# Email Notification Settings (set in .env)
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")  # Gmail App Password
+EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
+EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "587"))
