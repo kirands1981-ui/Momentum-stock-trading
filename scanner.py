@@ -2,13 +2,14 @@
 Main Scanner Module - Orchestrates the momentum scanning process
 """
 
+import argparse
 import logging
 import json
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
-import time
-from pathlib import Path
+
+import pandas as pd
 
 from config import (
     PRICE_INCREASE_THRESHOLD,
@@ -54,6 +55,39 @@ class MomentumScanner:
         self.enable_desktop_alerts = enable_desktop_alerts
         self.scanned_stocks = 0
         self.momentum_stocks = []
+
+    @staticmethod
+    def create_dry_run_dataset() -> pd.DataFrame:
+        """Create deterministic sample candles for exercising the alert pipeline."""
+        periods = 40
+        timestamps = pd.date_range(end=datetime.now(), periods=periods, freq="h")
+        rows = []
+        current_price = 100.0
+
+        for index, timestamp in enumerate(timestamps):
+            open_price = current_price
+            if index == periods - 1:
+                close_price = 112.0
+                high_price = 113.4
+                low_price = 99.8
+                volume = 12_500_000
+            else:
+                step = ((index % 5) - 2) * 0.12
+                close_price = round(open_price * (1 + step / 100), 2)
+                high_price = max(open_price, close_price) * 1.002
+                low_price = min(open_price, close_price) * 0.998
+                volume = 1_500_000 + (index % 4) * 125_000
+
+            rows.append({
+                'Open': round(open_price, 2),
+                'High': round(high_price, 2),
+                'Low': round(low_price, 2),
+                'Close': round(close_price, 2),
+                'Volume': int(volume),
+            })
+            current_price = close_price
+
+        return pd.DataFrame(rows, index=timestamps)
 
     def scan_stock(self, ticker: str) -> Optional[Dict]:
         """Scan a single stock for momentum"""
@@ -104,7 +138,12 @@ class MomentumScanner:
             logger.debug(f"Error scanning {ticker}: {e}")
             return None
 
-    def process_momentum_signal(self, momentum_result: Dict) -> bool:
+    def process_momentum_signal(
+        self,
+        momentum_result: Dict,
+        hourly_data: Optional[pd.DataFrame] = None,
+        skip_deduplication: bool = False,
+    ) -> bool:
         """Process a momentum signal and generate alert if needed"""
         
         if not momentum_result or not momentum_result.get('momentum_detected'):
@@ -113,7 +152,7 @@ class MomentumScanner:
         ticker = momentum_result['ticker']
 
         # Check deduplication
-        if not self.alert_manager.should_alert(ticker, ALERT_DEDUPLICATION_WINDOW):
+        if not skip_deduplication and not self.alert_manager.should_alert(ticker, ALERT_DEDUPLICATION_WINDOW):
             return False
 
         # Record and alert
@@ -124,11 +163,16 @@ class MomentumScanner:
         self.alert_logger.log_alert(momentum_result)
 
         # Generate and print alert
-        self._generate_alert_output(momentum_result, ticker)
+        self._generate_alert_output(momentum_result, ticker, hourly_data)
 
         return True
 
-    def _generate_alert_output(self, momentum_result: Dict, ticker: str) -> None:
+    def _generate_alert_output(
+        self,
+        momentum_result: Dict,
+        ticker: str,
+        hourly_data: Optional[pd.DataFrame] = None
+    ) -> None:
         """Generate alert output in multiple formats"""
 
         # Console output
@@ -147,11 +191,14 @@ class MomentumScanner:
         # Generate chart
         chart_path = None
         try:
-            hourly_data = self.data_fetcher.get_stock_data(ticker, period="5d")
-            if hourly_data is not None and not hourly_data.empty:
+            chart_data = hourly_data
+            if chart_data is None:
+                chart_data = self.data_fetcher.get_stock_data(ticker, period="5d")
+
+            if chart_data is not None and not chart_data.empty:
                 chart_path = create_momentum_chart(
                     ticker=ticker,
-                    hourly_data=hourly_data,
+                    hourly_data=chart_data,
                     signal_type=momentum_result['buy_type'],
                     momentum_score=momentum_result['score']
                 )
@@ -284,6 +331,29 @@ class MomentumScanner:
 
         return results
 
+    def run_dry_run(self, ticker: str = "DRYRUN") -> Dict:
+        """Exercise the scanner pipeline without live market requests."""
+        hourly_data = self.create_dry_run_dataset()
+        previous_close = 100.0
+        avg_30day_volume = 1_800_000.0
+
+        momentum_result = self.momentum_detector.detect_momentum(
+            ticker=ticker,
+            hourly_data=hourly_data,
+            previous_close=previous_close,
+            avg_30day_volume=avg_30day_volume,
+            has_positive_news=False,
+            pr_link=None,
+            pr_summary=None,
+        )
+
+        self.process_momentum_signal(
+            momentum_result,
+            hourly_data=hourly_data,
+            skip_deduplication=True,
+        )
+        return momentum_result
+
     def _log_scan_summary(self, results: Dict) -> None:
         """Log scan summary"""
         summary_lines = [
@@ -316,9 +386,25 @@ class MomentumScanner:
 
 def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(description="Momentum stock scanner")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the alert pipeline with synthetic data instead of live Yahoo Finance requests.",
+    )
+    args = parser.parse_args()
+
     scanner = MomentumScanner()
 
     try:
+        if args.dry_run:
+            result = scanner.run_dry_run()
+            print("\nDry run complete!")
+            print(f"Momentum detected: {result['momentum_detected']}")
+            print(f"Buy type: {result['buy_type']}")
+            print(f"Score: {result['score']:.1f}/100")
+            return
+
         # Run full scan
         results = scanner.scan_all_exchanges()
 

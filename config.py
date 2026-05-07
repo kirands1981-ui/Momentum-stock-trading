@@ -2,10 +2,16 @@
 Configuration settings for the Momentum Stock Alert System
 """
 
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # API Keys (set these in environment variables)
 YAHOO_FINANCE_API = True  # Using yfinance
-FINNHUB_API_KEY = ""  # Set via .env file
-NEWS_API_KEY = ""  # Set via .env file
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # Scanner Settings
 PRICE_INCREASE_THRESHOLD = 10  # Minimum 10% price increase

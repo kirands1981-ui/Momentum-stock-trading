@@ -150,7 +150,7 @@ class AlertFormatter:
             'volume': {
                 'latest': alert_data['details']['latest_volume'],
                 'relative_to_30day_avg': alert_data['details']['relative_volume'],
-                'threshold_met': alert_data['volume_spike']
+                'threshold_met': alert_data['details']['volume_spike']
             },
             'links': {
                 'webull_web': webull_link,

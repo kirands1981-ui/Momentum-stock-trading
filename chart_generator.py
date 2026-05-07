@@ -282,7 +282,7 @@ class CandleChart:
         """Add title and information labels"""
         
         # Title
-        signal_label = "🚀 INSTITUTIONAL BUY" if signal_type == "INSTITUTIONAL_BUY" else "📊 RETAIL BUY"
+        signal_label = "INSTITUTIONAL BUY" if signal_type == "INSTITUTIONAL_BUY" else "RETAIL BUY"
         title = f"{signal_label} - {ticker}"
         
         self.fig.suptitle(title, fontsize=20, fontweight='bold', 
@@ -339,6 +339,12 @@ def create_momentum_chart(ticker: str, hourly_data: pd.DataFrame,
         df = hourly_data.copy()
     else:
         raise ValueError("hourly_data must be a pandas DataFrame")
+
+    if 'timestamp' not in df.columns:
+        if isinstance(df.index, pd.DatetimeIndex):
+            df['timestamp'] = df.index
+        else:
+            raise ValueError("hourly_data must include a timestamp column or DatetimeIndex")
     
     # Ensure required columns
     required_cols = ['open', 'high', 'low', 'close', 'volume']

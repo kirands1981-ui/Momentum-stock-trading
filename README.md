@@ -116,6 +116,20 @@ pip install -r requirements.txt
 mkdir -p data logs
 ```
 
+5. **Configure environment variables** (optional but recommended)
+```bash
+cp .env.example .env
+# Then edit .env and fill in your API keys
+```
+
+Key variables in `.env`:
+
+| Variable | Required | Description |
+|---|---|---|
+| `FINNHUB_API_KEY` | Optional | Enables Finnhub as a live-data fallback when Yahoo Finance rate-limits |
+| `NEWS_API_KEY` | Optional | NewsAPI.org key for richer news sentiment |
+| `EMAIL_ENABLED` / `SENDER_EMAIL` / `SENDER_PASSWORD` | Optional | SMTP credentials for email alerts |
+
 ## Usage
 
 ### Basic Scan
@@ -200,6 +214,43 @@ ALERT_DEDUPLICATION_WINDOW = 24  # hours
 
 # Scan interval (for future scheduler)
 CHECK_INTERVAL_SECONDS = 300  # 5 minutes
+```
+
+### Data Source & Fallback
+
+The scanner uses **Yahoo Finance** (via `yfinance`) as the primary data source for price history, quote data, and news. Yahoo's public API is free but can return HTTP 429 rate-limit errors, especially from cloud/CI environments.
+
+When Yahoo returns no data, the scanner automatically falls back to **Finnhub** for:
+
+| Data | Yahoo (primary) | Finnhub (fallback) |
+|---|---|---|
+| Hourly candles | `yfinance.Ticker.history()` | `stock/candle` |
+| Previous close | `fast_info.previousClose` | `quote.pc` |
+| 30-day avg volume | `fast_info.threeMonthAverageVolume` | `stock/candle` daily mean |
+| Current price | `fast_info.lastPrice` | `quote.c` |
+| Company news | `yfinance.Ticker.news` | `company-news` |
+
+No code changes are needed — set `FINNHUB_API_KEY` in `.env` and the fallback activates automatically:
+
+```bash
+# .env
+FINNHUB_API_KEY=your_key_here   # free tier at https://finnhub.io/
+```
+
+### Dry Run (no live data)
+
+Run the full alert pipeline using synthetic candle data without hitting any live API:
+
+```bash
+python scanner.py --dry-run
+```
+
+This exercises the momentum detector, alert formatter, JSON output, deduplication bypass, and chart generator. Useful for verifying a new environment is wired up correctly before market hours.
+
+You can also run the bundled regression tests:
+
+```bash
+python -m unittest tests.test_scanner_and_fetcher
 ```
 
 ## Understanding the Trading Logic
