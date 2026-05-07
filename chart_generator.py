@@ -22,6 +22,8 @@ class CandleChart:
     COLOR_UP = '#00ff00'      # Green for bullish
     COLOR_DOWN = '#ff3333'    # Red for bearish
     COLOR_HIGHLIGHT = '#ffff00'  # Yellow for institutional buy signal
+    COLOR_SUPPORT = '#00bcd4'  # Cyan support line
+    COLOR_RESISTANCE = '#ff9800'  # Orange resistance line
     COLOR_VOLUME_UP = '#00ff00'   # Green volume
     COLOR_VOLUME_DOWN = '#ff3333' # Red volume
     COLOR_BACKGROUND = '#000000'  # Black background
@@ -130,6 +132,9 @@ class CandleChart:
         
         # Plot candlesticks
         self._plot_candlesticks(df, x_pos, highlight_position)
+
+        # Plot support/resistance levels
+        self._plot_key_levels(df)
         
         # Plot volume
         self._plot_volume(df, x_pos, highlight_position)
@@ -227,6 +232,40 @@ class CandleChart:
         
         self.ax_volume.set_ylim(0, df['volume'].max() * 1.2)
         self.ax_volume.set_xlim(-1, len(df))
+
+    def _plot_key_levels(self, df: pd.DataFrame):
+        """Draw support and resistance levels from recent candles."""
+        if len(df) < 10:
+            return
+
+        recent = df.iloc[-min(20, len(df)):]
+        support = float(recent['low'].min())
+        resistance = float(recent['high'].max())
+
+        self.ax_candle.axhline(
+            support,
+            color=self.COLOR_SUPPORT,
+            linestyle='--',
+            linewidth=1.2,
+            alpha=0.85,
+            label=f'Support {support:.2f}'
+        )
+        self.ax_candle.axhline(
+            resistance,
+            color=self.COLOR_RESISTANCE,
+            linestyle='--',
+            linewidth=1.2,
+            alpha=0.85,
+            label=f'Resistance {resistance:.2f}'
+        )
+
+        self.ax_candle.legend(
+            loc='upper left',
+            fontsize=8,
+            facecolor=self.COLOR_BACKGROUND,
+            edgecolor=self.COLOR_GRID,
+            labelcolor=self.COLOR_TEXT,
+        )
 
     def _format_axes(self, df: pd.DataFrame, x_pos: np.ndarray, 
                     signal_type: str, ticker: str, momentum_score: float):
@@ -356,17 +395,20 @@ def create_momentum_chart(ticker: str, hourly_data: pd.DataFrame,
             else:
                 raise ValueError(f"Missing required column: {col}")
     
-    # Limit to last 40 candles
+    # Focus on the most recent 40 candles.
     if len(df) > 40:
         df = df.iloc[-40:].reset_index(drop=True)
     else:
+        if len(df) < 40:
+            logger.warning(
+                f"{ticker} has only {len(df)} candles. Chart quality improves with at least 40 candles."
+            )
         df = df.reset_index(drop=True)
     
     # Auto-find highlight position if not provided
     if highlight_position is None:
-        # Find candle with highest volume * price move
-        df['score'] = (df['volume'] / df['volume'].mean()) * (abs(df['close'] - df['open']) / df['open'] * 100)
-        highlight_position = df['score'].idxmax()
+        # Scanner decisions are based on the latest candle, so highlight it by default.
+        highlight_position = len(df) - 1
     
     chart_gen = CandleChart()
     output_path = f"data/charts/{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"

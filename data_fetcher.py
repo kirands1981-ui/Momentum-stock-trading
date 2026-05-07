@@ -20,7 +20,18 @@ class StockDataFetcher:
     def __init__(self):
         self.session = requests.Session()
         self.cache = {}  # Cache Yahoo ticker objects and quote metadata
+        self.fundamentals_cache = {}
         self.finnhub_api_key = FINNHUB_API_KEY.strip()
+
+    @staticmethod
+    def _safe_float(value) -> Optional[float]:
+        """Convert input to float when possible."""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _get_ticker(self, ticker: str) -> yf.Ticker:
         """Return a cached yfinance ticker object."""
@@ -64,6 +75,149 @@ class StockDataFetcher:
         if not quote or not quote.get('c'):
             return None
         return quote
+
+    def _get_yahoo_info(self, ticker: str) -> Dict:
+        """Fetch full Yahoo info (heavier endpoint) only when needed."""
+        try:
+            return self._get_ticker(ticker).info or {}
+        except Exception as e:
+            logger.debug(f"Error fetching Yahoo info for {ticker}: {e}")
+            return {}
+
+    def _extract_fundamentals_from_yahoo(self, info: Dict) -> Dict[str, Optional[float]]:
+        """Normalize fundamental fields from Yahoo info."""
+        pe_ratio = self._safe_float(info.get('trailingPE') or info.get('forwardPE'))
+        roic = self._safe_float(info.get('returnOnCapital'))
+        debt_to_equity = self._safe_float(info.get('debtToEquity'))
+        eps_cagr = self._safe_float(
+            info.get('earningsQuarterlyGrowth')
+            or info.get('earningsGrowth')
+            or info.get('earningsGrowth5y')
+        )
+        roe = self._safe_float(info.get('returnOnEquity'))
+        ebit_margin = self._safe_float(info.get('ebitdaMargins') or info.get('operatingMargins'))
+        gross_margin = self._safe_float(info.get('grossMargins'))
+
+        # Convert decimal ratios to percentages where needed.
+        def pct(value: Optional[float]) -> Optional[float]:
+            if value is None:
+                return None
+            return value * 100 if abs(value) <= 1 else value
+
+        return {
+            'pe_ratio': pe_ratio,
+            'roic_pct': pct(roic),
+            'de_ratio': debt_to_equity,
+            'eps_cagr_pct': pct(eps_cagr),
+            'roe_pct': pct(roe),
+            'ebit_margin_pct': pct(ebit_margin),
+            'gross_margin_pct': pct(gross_margin),
+            'source': 'yahoo',
+        }
+
+    def _extract_fundamentals_from_finnhub(self, metric: Dict) -> Dict[str, Optional[float]]:
+        """Normalize fundamental fields from Finnhub metric payload."""
+        def pick(*keys):
+            for key in keys:
+                if key in metric and metric.get(key) is not None:
+                    return self._safe_float(metric.get(key))
+            return None
+
+        return {
+            'pe_ratio': pick('peTTM', 'peAnnual'),
+            'roic_pct': pick('roiTTM', 'roiAnnual', 'roiRfy'),
+            'de_ratio': pick('totalDebt/totalEquityQuarterly', 'totalDebt/totalEquityAnnual'),
+            'eps_cagr_pct': pick('epsGrowth5Y', 'epsGrowth3Y', 'epsGrowthQuarterlyYoy'),
+            'roe_pct': pick('roeTTM', 'roeRfy', 'roeAnnual'),
+            'ebit_margin_pct': pick('ebitMarginTTM', 'operatingMarginAnnual'),
+            'gross_margin_pct': pick('grossMarginTTM', 'grossMarginAnnual'),
+            'source': 'finnhub',
+        }
+
+    def get_fundamentals(self, ticker: str) -> Dict[str, Optional[float]]:
+        """Get valuation/profitability metrics for fundamental screening."""
+        if ticker in self.fundamentals_cache:
+            return self.fundamentals_cache[ticker]
+
+        fundamentals = {
+            'pe_ratio': None,
+            'roic_pct': None,
+            'de_ratio': None,
+            'eps_cagr_pct': None,
+            'roe_pct': None,
+            'ebit_margin_pct': None,
+            'gross_margin_pct': None,
+            'source': 'none',
+        }
+
+        info = self._get_yahoo_info(ticker)
+        if info:
+            fundamentals = self._extract_fundamentals_from_yahoo(info)
+
+        # Fill missing fields from Finnhub metric endpoint where possible.
+        missing_fields = [
+            key for key in (
+                'pe_ratio',
+                'roic_pct',
+                'de_ratio',
+                'eps_cagr_pct',
+                'roe_pct',
+                'ebit_margin_pct',
+                'gross_margin_pct',
+            )
+            if fundamentals.get(key) is None
+        ]
+        if missing_fields:
+            metric_payload = self._finnhub_get('stock/metric', {'symbol': ticker, 'metric': 'all'})
+            metric = metric_payload.get('metric', {}) if isinstance(metric_payload, dict) else {}
+            if metric:
+                finnhub_fundamentals = self._extract_fundamentals_from_finnhub(metric)
+                for key, value in finnhub_fundamentals.items():
+                    if key == 'source':
+                        continue
+                    if fundamentals.get(key) is None and value is not None:
+                        fundamentals[key] = value
+                if fundamentals.get('source') == 'none':
+                    fundamentals['source'] = finnhub_fundamentals.get('source', 'finnhub')
+
+        self.fundamentals_cache[ticker] = fundamentals
+        return fundamentals
+
+    @staticmethod
+    def passes_fundamental_filter(fundamentals: Dict[str, Optional[float]]) -> bool:
+        """Apply strict fundamental screen provided by strategy requirements."""
+        if not fundamentals:
+            return False
+
+        pe_ratio = fundamentals.get('pe_ratio')
+        roic_pct = fundamentals.get('roic_pct')
+        de_ratio = fundamentals.get('de_ratio')
+        eps_cagr_pct = fundamentals.get('eps_cagr_pct')
+        roe_pct = fundamentals.get('roe_pct')
+        ebit_margin_pct = fundamentals.get('ebit_margin_pct')
+        gross_margin_pct = fundamentals.get('gross_margin_pct')
+
+        required = [
+            pe_ratio,
+            roic_pct,
+            de_ratio,
+            eps_cagr_pct,
+            roe_pct,
+            ebit_margin_pct,
+            gross_margin_pct,
+        ]
+        if any(value is None for value in required):
+            return False
+
+        return (
+            pe_ratio < 20
+            and roic_pct > 15
+            and de_ratio < 1
+            and eps_cagr_pct > 10
+            and roe_pct > 15
+            and ebit_margin_pct > 10
+            and gross_margin_pct > 40
+        )
 
     def _get_finnhub_history(self, ticker: str, period: str, interval: str) -> Optional[pd.DataFrame]:
         """Fetch historical candles from Finnhub and normalize to yfinance-like columns."""

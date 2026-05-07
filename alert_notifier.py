@@ -7,6 +7,7 @@ import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
+from email.mime.application import MIMEApplication
 from datetime import datetime
 from typing import Dict, List, Optional
 import threading
@@ -28,8 +29,13 @@ class EmailNotifier:
         self.sender_password = sender_password
         self.enabled = bool(sender_email and sender_password)
 
-    def send_alert(self, recipient_email: str, alert_data: Dict, 
-                  chart_path: Optional[str] = None) -> bool:
+    def send_alert(
+        self,
+        recipient_email: str,
+        alert_data: Dict,
+        chart_path: Optional[str] = None,
+        attachment_paths: Optional[List[str]] = None,
+    ) -> bool:
         """
         Send alert email with optional chart attachment
         
@@ -75,6 +81,20 @@ class EmailNotifier:
                 except Exception as e:
                     logger.error(f"Error attaching chart to email: {e}")
 
+            for attachment_path in attachment_paths or []:
+                if not attachment_path:
+                    continue
+                path_obj = Path(attachment_path)
+                if not path_obj.exists() or not path_obj.is_file():
+                    continue
+                try:
+                    with open(path_obj, 'rb') as attachment_file:
+                        part = MIMEApplication(attachment_file.read(), Name=path_obj.name)
+                        part['Content-Disposition'] = f'attachment; filename="{path_obj.name}"'
+                        msg.attach(part)
+                except Exception as e:
+                    logger.error(f"Error attaching file {path_obj.name}: {e}")
+
             # Send email
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
@@ -86,6 +106,41 @@ class EmailNotifier:
 
         except Exception as e:
             logger.error(f"Error sending email alert: {e}")
+            return False
+
+    def send_summary_email(self, recipient_email: str, summary_text: str,
+                           attachment_paths: Optional[List[str]] = None) -> bool:
+        """Send end-of-scan summary email with attachments."""
+        if not self.enabled:
+            logger.debug("Email notifier not configured, skipping summary email")
+            return False
+
+        try:
+            msg = MIMEMultipart('mixed')
+            msg['Subject'] = f"Momentum Scan Summary - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            msg['From'] = self.sender_email
+            msg['To'] = recipient_email
+
+            msg.attach(MIMEText(summary_text, 'plain'))
+
+            for attachment_path in attachment_paths or []:
+                path_obj = Path(attachment_path)
+                if not path_obj.exists() or not path_obj.is_file():
+                    continue
+                with open(path_obj, 'rb') as attachment_file:
+                    part = MIMEApplication(attachment_file.read(), Name=path_obj.name)
+                    part['Content-Disposition'] = f'attachment; filename="{path_obj.name}"'
+                    msg.attach(part)
+
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.sender_email, self.sender_password)
+                server.send_message(msg)
+
+            logger.info(f"Summary email sent to {recipient_email}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending summary email: {e}")
             return False
 
     def _create_html_email(self, alert_data: Dict) -> str:
@@ -307,8 +362,9 @@ class AlertNotifier:
         if webhook_url:
             self.webhook_notifier = WebhookNotifier(webhook_url)
 
-    def send_alert(self, alert_data: Dict, recipient_email: str = None, 
-                  chart_path: Optional[str] = None) -> Dict[str, bool]:
+    def send_alert(self, alert_data: Dict, recipient_email: str = None,
+                  chart_path: Optional[str] = None,
+                  attachment_paths: Optional[List[str]] = None) -> Dict[str, bool]:
         """
         Send alert via all configured channels
         
@@ -334,7 +390,7 @@ class AlertNotifier:
         # Send email
         if self.email_notifier and recipient_email:
             results['email'] = self.email_notifier.send_alert(
-                recipient_email, alert_data, chart_path
+                recipient_email, alert_data, chart_path, attachment_paths
             )
 
         # Send webhook
@@ -342,6 +398,17 @@ class AlertNotifier:
             results['webhook'] = self.webhook_notifier.send_alert(alert_data)
 
         return results
+
+    def send_summary(self, recipient_email: str, summary_text: str,
+                     attachment_paths: Optional[List[str]] = None) -> bool:
+        """Send summary notification over email channel."""
+        if not self.email_notifier or not recipient_email:
+            return False
+        return self.email_notifier.send_summary_email(
+            recipient_email,
+            summary_text,
+            attachment_paths,
+        )
 
     def send_alert_async(self, alert_data: Dict, recipient_email: str = None,
                         chart_path: Optional[str] = None):

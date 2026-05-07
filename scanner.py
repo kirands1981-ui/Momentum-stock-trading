@@ -8,6 +8,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional
 
@@ -105,6 +106,11 @@ class MomentumScanner:
             if not self.data_fetcher.check_stock_exists(ticker):
                 return None
 
+            # Strict fundamental screen before technical checks
+            fundamentals = self.data_fetcher.get_fundamentals(ticker)
+            if not self.data_fetcher.passes_fundamental_filter(fundamentals):
+                return None
+
             # Get required data
             hourly_data = self.data_fetcher.get_stock_data(ticker, period="5d")
             if hourly_data is None or hourly_data.empty:
@@ -140,6 +146,9 @@ class MomentumScanner:
                 pr_link=news_url,
                 pr_summary=pr_summary
             )
+
+            if momentum_result and 'details' in momentum_result:
+                momentum_result['details']['fundamentals'] = fundamentals
 
             return momentum_result
 
@@ -269,6 +278,94 @@ class MomentumScanner:
         except Exception as e:
             logger.error(f"Error writing to alerts file: {e}")
 
+    def _create_alerts_summary_excel(self, all_alerts: List[Dict]) -> Optional[str]:
+        """Create an XLSX workbook with one sheet per alerted stock."""
+        if not all_alerts:
+            return None
+
+        output_dir = Path("data/reports")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"alerts_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+        try:
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                overview_rows = []
+
+                for alert in all_alerts:
+                    ticker = alert.get('ticker', 'UNKNOWN')
+                    details = alert.get('details', {})
+                    fundamentals = details.get('fundamentals', {})
+
+                    sheet_name = ticker[:31]
+                    rows = [
+                        ('Ticker', ticker),
+                        ('Buy Type', alert.get('buy_type', 'NONE')),
+                        ('Momentum Score', alert.get('score', 0)),
+                        ('Current Price', details.get('current_price')),
+                        ('Price Increase %', details.get('price_increase_percent')),
+                        ('Relative Volume', details.get('relative_volume')),
+                        ('Signals Fired', details.get('signals_fired')),
+                        ('P/E', fundamentals.get('pe_ratio')),
+                        ('ROIC %', fundamentals.get('roic_pct')),
+                        ('D/E', fundamentals.get('de_ratio')),
+                        ('EPS CAGR %', fundamentals.get('eps_cagr_pct')),
+                        ('ROE %', fundamentals.get('roe_pct')),
+                        ('EBIT Margin %', fundamentals.get('ebit_margin_pct')),
+                        ('Gross Margin %', fundamentals.get('gross_margin_pct')),
+                        ('Fundamentals Source', fundamentals.get('source')),
+                    ]
+
+                    pd.DataFrame(rows, columns=['Metric', 'Value']).to_excel(
+                        writer,
+                        sheet_name=sheet_name,
+                        index=False,
+                    )
+
+                    overview_rows.append({
+                        'Ticker': ticker,
+                        'Buy Type': alert.get('buy_type', 'NONE'),
+                        'Score': alert.get('score', 0),
+                        'P/E': fundamentals.get('pe_ratio'),
+                        'ROIC %': fundamentals.get('roic_pct'),
+                        'D/E': fundamentals.get('de_ratio'),
+                        'EPS CAGR %': fundamentals.get('eps_cagr_pct'),
+                        'ROE %': fundamentals.get('roe_pct'),
+                        'EBIT Margin %': fundamentals.get('ebit_margin_pct'),
+                        'Gross Margin %': fundamentals.get('gross_margin_pct'),
+                    })
+
+                pd.DataFrame(overview_rows).to_excel(writer, sheet_name='Overview', index=False)
+
+            logger.info(f"Summary workbook created: {output_path}")
+            return str(output_path)
+        except Exception as e:
+            logger.error(f"Error creating summary workbook: {e}")
+            return None
+
+    def _send_scan_summary_email(self, results: Dict, workbook_path: Optional[str]) -> None:
+        """Send one scan summary email with optional workbook attachment."""
+        if not self.recipient_email or results.get('total_momentum', 0) == 0:
+            return
+
+        summary_lines = [
+            f"Momentum scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Total Stocks Scanned: {results['total_scanned']}",
+            f"Total Alerts: {results['total_momentum']}",
+            f"Institutional/Breakout Alerts: {results['institutional_buys']}",
+            f"Retail Alerts: {results['retail_buys']}",
+            f"NASDAQ Alerts: {len(results['nasdaq'])}",
+            f"NYSE Alerts: {len(results['nyse'])}",
+            f"AMEX Alerts: {len(results['amex'])}",
+        ]
+
+        sent = self.alert_notifier.send_summary(
+            recipient_email=self.recipient_email,
+            summary_text='\n'.join(summary_lines),
+            attachment_paths=[workbook_path] if workbook_path else None,
+        )
+        if sent:
+            logger.info("Summary email delivered")
+
     def scan_exchange(self, stock_list: List[str], workers: int = 10) -> List[Dict]:
         """Scan a list of stocks in parallel, process signals serially."""
         total = len(stock_list)
@@ -338,10 +435,14 @@ class MomentumScanner:
 
         for exchange_results in [results['nasdaq'], results['nyse'], results['amex']]:
             for item in exchange_results:
-                if item.get('buy_type') == 'INSTITUTIONAL_BUY':
+                if item.get('buy_type') in ('INSTITUTIONAL_BUY', 'INSTITUTIONAL_ACCUMULATION', 'BREAKOUT_BUY'):
                     results['institutional_buys'] += 1
                 elif item.get('buy_type') == 'RETAIL_BUY':
                     results['retail_buys'] += 1
+
+        all_alerts = results['nasdaq'] + results['nyse'] + results['amex']
+        workbook_path = self._create_alerts_summary_excel(all_alerts)
+        self._send_scan_summary_email(results, workbook_path)
 
         # Log summary
         self._log_scan_summary(results)
