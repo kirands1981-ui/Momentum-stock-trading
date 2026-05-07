@@ -6,7 +6,9 @@ import argparse
 import logging
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from threading import Lock
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -55,6 +57,8 @@ class MomentumScanner:
         self.enable_desktop_alerts = enable_desktop_alerts
         self.scanned_stocks = 0
         self.momentum_stocks = []
+        self._counter_lock = Lock()   # guards scanned_stocks
+        self._file_lock = Lock()      # guards alerts JSON file
 
     @staticmethod
     def create_dry_run_dataset() -> pd.DataFrame:
@@ -242,45 +246,57 @@ class MomentumScanner:
             logger.error(f"Error sending notifications: {e}")
 
     def _append_to_alerts_file(self, alert_json: Dict) -> None:
-        """Append alert to JSON alerts file"""
+        """Append alert to JSON alerts file (thread-safe)."""
         try:
             os.makedirs(os.path.dirname(OUTPUT_ALERT_FILE) or '.', exist_ok=True)
 
-            alerts = []
-            if os.path.exists(OUTPUT_ALERT_FILE):
-                with open(OUTPUT_ALERT_FILE, 'r') as f:
-                    alerts = json.load(f)
+            with self._file_lock:
+                alerts = []
+                if os.path.exists(OUTPUT_ALERT_FILE):
+                    with open(OUTPUT_ALERT_FILE, 'r') as f:
+                        alerts = json.load(f)
 
-            alerts.append(alert_json)
+                alerts.append(alert_json)
 
-            with open(OUTPUT_ALERT_FILE, 'w') as f:
-                json.dump(alerts, f, indent=2)
+                with open(OUTPUT_ALERT_FILE, 'w') as f:
+                    json.dump(alerts, f, indent=2)
 
         except Exception as e:
             logger.error(f"Error writing to alerts file: {e}")
 
-    def scan_exchange(self, stock_list: List[str]) -> List[Dict]:
-        """Scan a list of stocks"""
-        logger.info(f"Starting scan of {len(stock_list)} stocks...")
+    def scan_exchange(self, stock_list: List[str], workers: int = 10) -> List[Dict]:
+        """Scan a list of stocks in parallel, process signals serially."""
+        total = len(stock_list)
+        logger.info(f"Starting scan of {total} stocks ({workers} workers)...")
         self.momentum_stocks = []
+        completed = 0
 
-        for i, ticker in enumerate(stock_list):
-            if i % 50 == 0:
-                logger.info(f"Progress: {i}/{len(stock_list)} stocks scanned...")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_ticker = {
+                executor.submit(self.scan_stock, ticker): ticker
+                for ticker in stock_list
+            }
 
-            try:
-                momentum_result = self.scan_stock(ticker)
-                if momentum_result:
-                    self.process_momentum_signal(momentum_result)
-            except Exception as e:
-                logger.debug(f"Error processing {ticker}: {e}")
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    momentum_result = future.result()
+                    if momentum_result:
+                        self.process_momentum_signal(momentum_result)
+                except Exception as e:
+                    logger.debug(f"Error processing {ticker}: {e}")
 
-            self.scanned_stocks += 1
+                with self._counter_lock:
+                    self.scanned_stocks += 1
+                    completed += 1
+
+                if completed % 20 == 0 or completed == total:
+                    logger.info(f"Progress: {completed}/{total} stocks scanned...")
 
         return self.momentum_stocks
 
-    def scan_all_exchanges(self) -> Dict:
-        """Scan all exchanges (NASDAQ, NYSE, AMEX)"""
+    def scan_all_exchanges(self, workers: int = 10) -> Dict:
+        """Scan all exchanges (NASDAQ, NYSE, AMEX) using parallel workers."""
         logger.info("=" * 60)
         logger.info(f"SCAN START: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 60)
@@ -298,17 +314,17 @@ class MomentumScanner:
         # NASDAQ scan
         logger.info("\nScanning NASDAQ...")
         nasdaq_stocks = self.data_fetcher.get_nasdaq_stocks()
-        results['nasdaq'] = self.scan_exchange(nasdaq_stocks)
+        results['nasdaq'] = self.scan_exchange(nasdaq_stocks, workers=workers)
 
         # NYSE scan
         logger.info("\nScanning NYSE...")
         nyse_stocks = self.data_fetcher.get_nyse_stocks()
-        results['nyse'] = self.scan_exchange(nyse_stocks)
+        results['nyse'] = self.scan_exchange(nyse_stocks, workers=workers)
 
         # AMEX scan
         logger.info("\nScanning AMEX...")
         amex_stocks = self.data_fetcher.get_amex_stocks()
-        results['amex'] = self.scan_exchange(amex_stocks)
+        results['amex'] = self.scan_exchange(amex_stocks, workers=workers)
 
         # Calculate totals
         results['total_scanned'] = self.scanned_stocks
@@ -392,6 +408,13 @@ def main():
         action="store_true",
         help="Run the alert pipeline with synthetic data instead of live Yahoo Finance requests.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of parallel worker threads for scanning (default: 10).",
+    )
     args = parser.parse_args()
 
     scanner = MomentumScanner()
@@ -406,7 +429,7 @@ def main():
             return
 
         # Run full scan
-        results = scanner.scan_all_exchanges()
+        results = scanner.scan_all_exchanges(workers=args.workers)
 
         # Print final summary
         print(f"\n✅ Scan complete!")
