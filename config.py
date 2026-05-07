@@ -38,7 +38,7 @@ ALERT_HISTORY_FILE = "data/alert_history.json"
 LOG_FILE = "logs/momentum_alerts.log"
 
 # Stock Filter Settings
-MIN_PRICE = 1.0  # Minimum stock price
+MIN_PRICE = 10.0  # Minimum stock price for scanning
 MAX_PRICE = 10000.0  # Maximum stock price
 MIN_MARKET_CAP = 100_000_000  # Minimum $100M market cap
 
