@@ -18,21 +18,21 @@ Dependency-free momentum scanner for NASDAQ, NYSE, and AMEX stocks.
 ## Run
 
 ```bash
-python /home/runner/work/Momentum-stock-trading/Momentum-stock-trading/momentum_alerts.py --format text
+python momentum_alerts.py --format text
 ```
 
 Useful options:
 
 ```bash
-python /home/runner/work/Momentum-stock-trading/Momentum-stock-trading/momentum_alerts.py \
+python momentum_alerts.py \
   --exchange NASDAQ \
   --limit 100 \
-  --state-file /home/runner/work/Momentum-stock-trading/Momentum-stock-trading/.momentum_alert_state.json \
+  --state-file .momentum_alert_state.json \
   --format json
 ```
 
 ## Tests
 
 ```bash
-python -m unittest discover -s /home/runner/work/Momentum-stock-trading/Momentum-stock-trading/tests -v
+python -m unittest discover -s tests -v
 ```
